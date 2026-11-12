@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <link rel="icon" type="image/png" href="/logo.png?v=3">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Later Vault</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' }
+  </script>
+  <style>
+    /* тонкий аккуратный скроллбар для списка просмотренных */
+    #watchedListGrid::-webkit-scrollbar { width: 12px; }
+    #watchedListGrid::-webkit-scrollbar-track { background: transparent; }
+    #watchedListGrid::-webkit-scrollbar-thumb { background: #71717a; border-radius: 6px; }
+    #watchedListGrid::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+    #watchedListGrid { scrollbar-width: auto; scrollbar-color: #71717a transparent; }
+
+    /* Фикс сжатия превью в Firefox: жёсткая пропорция 16:9 через padding-top-хак
+       (aspect-ratio в Firefox ведёт себя иначе в grid + flex-карточках) */
+    #watchedListGrid .yt-thumb-wrap {
+      position: relative;
+      width: 100%;
+      padding-top: 56.25%; /* 9/16 — всегда держит пропорцию */
+      overflow: hidden;
+      background: #000;
+      display: block;
+    }
+    #watchedListGrid .yt-thumb-wrap img {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      margin: 0;
+      display: block;
+    }
+    /* карточкам запрещаем сжиматься по вертикали: строки грида
+       держат естественную высоту, лишнее уходит в скролл сетки */
+    #watchedListGrid > div {
+      min-height: min-content;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen font-sans antialiased selection:bg-red-500 selection:text-white relative" onclick="handleOutsideClick(event)">
+
+  <!-- Шапка -->
+  <header class="sticky top-0 z-40 bg-zinc-900/90 backdrop-blur border-b border-zinc-800 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <a href="https://youtube.com" target="_blank" rel="noopener noreferrer" class="p-2 bg-red-600/10 border border-red-500/20 rounded-xl text-red-500 hover:bg-red-600/20 hover:border-red-500/40 transition" title="Открыть YouTube">
+        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+      </a>
+      <h1 class="text-xl font-bold tracking-tight">Watch Later <span class="text-xs font-mono text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded ml-1 border border-zinc-700">VAULT</span></h1>
+      
+      <!-- Интерактивная кнопка-счётчик Просмотрено с поп-апом -->
+      <div class="relative hidden sm:flex flex-wrap items-center gap-2">
+        <button id="watchedPopoverTrigger" onclick="toggleWatchedPopover(event)" class="flex items-center gap-2 bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-zinc-600 px-3 py-1.5 rounded-full text-xs font-mono transition cursor-pointer">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span class="text-zinc-400">Просмотрено:</span>
+          <span id="watchedCounter" class="text-zinc-100 font-bold">0</span>
+          <svg class="w-3.5 h-3.5 text-zinc-400 ml-0.5 transition-transform duration-200" id="watchedArrow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+        </button>
+        <span id="watchedHours" class="flex items-center gap-1.5 bg-zinc-800/60 border border-zinc-700/60 px-3 py-1.5 rounded-full text-xs font-mono text-zinc-400" title="Суммарное время просмотренных видео">
+          <svg class="w-3.5 h-3.5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          <span id="watchedHoursValue">0 ч.</span>
+        </span>
+      </div>
+
+        <!-- Выпадающий поп-ап (3х3 карточки, прокрутка вниз) -->
+        <div id="watchedPopover" class="hidden absolute top-full left-0 mt-2 w-[540px] bg-zinc-900/95 backdrop-blur-md border border-zinc-700/80 rounded-2xl shadow-2xl z-50 p-4 flex flex-col gap-3">
+          <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
+            <span class="text-xs font-semibold text-zinc-300 font-mono flex items-center gap-1.5">
+              <span>✅</span> Просмотренные видео
+            </span>
+            <button onclick="toggleWatchedPopover(event)" class="text-zinc-500 hover:text-zinc-300 text-xs">✕</button>
+          </div>
+          
+          <div id="watchedListGrid" class="grid grid-cols-3 gap-3 auto-rows-min overflow-y-auto max-h-[380px] pr-1 scrollbar-thin">
+            <!-- Список просмотренных рендерится через JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Форма добавления видео -->
+    <form onsubmit="addVideo(event)" class="flex gap-2 w-full max-w-lg">
+      <input id="urlInput" type="text" placeholder="Вставь ссылку на YouTube..." class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition placeholder:text-zinc-500">
+      <button type="submit" class="bg-red-600 hover:bg-red-500 text-white font-medium px-4 py-2 rounded-xl text-sm transition shrink-0" title="Сохранить ссылку из текстового поля">
+        Сохранить
+      </button>
+      <button type="button" onclick="addFromClipboard()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 font-medium px-4 py-2 rounded-xl text-sm transition shrink-0 flex items-center gap-1.5" title="Вставить и сохранить из буфера обмена">
+        📋 Буфер
+      </button>
+    </form>
+
+    <!-- Слайдер переключения сетки -->
+    <div class="flex items-center gap-3 bg-zinc-800/80 border border-zinc-700/60 px-4 py-2 rounded-xl">
+      <span class="text-xs font-medium text-zinc-400">Мало</span>
+      <input type="range" id="gridSlider" min="4" max="6" step="2" value="4" oninput="changeGridCols()" 
+             class="w-16 h-1 bg-zinc-600 rounded-lg appearance-none cursor-pointer accent-red-500">
+      <span class="text-xs font-medium text-zinc-400">Много</span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <button id="syncBtn" onclick="syncAllVideos()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl text-sm border border-zinc-700 transition flex items-center gap-1" title="Обновить время и просмотры для всей базы">
+        🔄 <span class="hidden md:inline">Обновить инфо</span>
+      </button>
+      <button onclick="syncAllThumbs()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl text-sm border border-zinc-700 transition" title="Скачать все превью на сервер — карточки будут работать без доступа к YouTube">
+        🖼 <span class="hidden md:inline">Превью на диск</span>
+      </button>
+      <button onclick="exportData()" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl text-sm border border-zinc-700 transition" title="Экспорт в файл">💾 Экспорт</button>
+      <label class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl text-sm border border-zinc-700 transition cursor-pointer" title="Импорт из файла">
+        📂 Импорт
+        <input type="file" accept=".json,.txt" onchange="importData(event)" class="hidden">
+      </label>
+      <button onclick="playRandom()" class="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-medium px-4 py-2 rounded-xl text-sm transition flex items-center gap-2">
+        🎲 Мне повезёт!
+      </button>
+    </div>
+  </header>
+
+  <!-- Панель управления -->
+  <div class="max-w-7xl mx-auto px-6 pt-6 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3 bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-xl">
+      <span class="text-xs font-medium text-zinc-400">Длительность:</span>
+      <input type="range" id="durationSlider" min="0" max="7" step="1" value="0" oninput="handleDurationChange()" 
+             class="w-36 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-red-500">
+      <span id="durationLabel" class="text-xs font-bold text-red-400 min-w-[90px]">Все</span>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <select id="sortSelect" onchange="renderGrid()" class="bg-zinc-900 text-zinc-300 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-red-500">
+        <option value="newest">Сначала новые</option>
+        <option value="random">🎲 Случайный фид</option>
+        <option value="duration_asc">Длительность (возр.)</option>
+        <option value="duration_desc">Длительность (убыв.)</option>
+        <option value="views_desc">Просмотры (убыв.)</option>
+      </select>
+      <div class="text-xs text-zinc-500 font-mono" id="statsCount">0 видео</div>
+    </div>
+  </div>
+
+  <main class="w-full px-6 md:px-12 py-4">
+    <div id="videoGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
+    <div id="emptyState" class="hidden text-center py-20 text-zinc-500">
+      <p class="text-lg">Сохранённых видео пока нет 🎬</p>
+    </div>
+  </main>
+
+  <!-- Модальное окно для "Мне повезёт" -->
+  <div id="randomModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-md overflow-hidden relative shadow-2xl flex flex-col">
+      <button onclick="closeRandomModal()" class="absolute top-2 right-2 z-10 bg-black/60 hover:bg-red-600 text-white w-8 h-8 rounded-full flex items-center justify-center transition backdrop-blur-md">
+        ✕
+      </button>
+      
+      <div id="randomModalContent" class="flex-grow"></div>
+      
+      <div class="p-4 bg-zinc-900 border-t border-zinc-800/80 flex gap-2">
+        <button onclick="markRandomWatched()" class="flex-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold py-3 rounded-xl text-sm transition flex items-center justify-center gap-2">
+          ✓ Просмотрено
+        </button>
+        <button onclick="playRandom()" class="flex-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold py-3 rounded-xl text-sm transition flex items-center justify-center gap-2">
+          🎲 Ещё раз!
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let videos = [];
+    let currentDurationStep = 0;
+
+    // единая модель: все видео (в т.ч. просмотренные) в videos с полем watched: true/false.
+    // хранится на сервере в videos.json — не зависит от браузера/адреса/кеша
+
+    const watchedVideos = () => videos.filter(v => v.watched)
+      // сначала те, что просмотрены позже (watchedAt); старые записи без метки — в конце, в исходном порядке
+      .sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0));
+    const activeVideos = () => videos.filter(v => !v.watched);
+
+    function updateWatchedCountUI() {
+      const watched = watchedVideos();
+      document.getElementById('watchedCounter').innerText = watched.length;
+      // суммарные часы просмотра
+      const totalSec = watched.reduce((s, v) => s + (v.durationSec || 0), 0);
+      const hours = totalSec / 3600;
+      document.getElementById('watchedHoursValue').innerText =
+        hours >= 10 ? Math.round(hours) + ' ч.' :
+        hours >= 1 ? hours.toFixed(1) + ' ч.' :
+        Math.round(totalSec / 60) + ' мин.';
+    }
+
+    async function loadData() {
+      try {
+        const res = await fetch('/api/videos');
+        videos = await res.json();
+        // разовая миграция: если в этом браузере остался старый localStorage с просмотренными — переносим в сервер
+        await migrateOldWatched();
+        updateWatchedCountUI();
+        renderGrid();
+      } catch (err) { console.error('Ошибка', err); }
+    }
+
+    /* перенос старых просмотренных из localStorage (старой версии) в серверную базу */
+    async function migrateOldWatched() {
+      let old = [];
+      try { old = JSON.parse(localStorage.getItem('yt_vault_watched_list') || '[]') || []; } catch (e) { old = []; }
+      if (!old.length) return;
+      let changed = false;
+      for (const w of old) {
+        const v = videos.find(x => x.id === w.id);
+        if (v && !v.watched) { v.watched = true; changed = true; }
+      }
+      if (changed) {
+        await fetch('/api/videos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(videos)
+        });
+      }
+      localStorage.removeItem('yt_vault_watched_list'); // старый ключ больше не нужен
+    }
+
+    async function saveAndRender() {
+      try {
+        await fetch('/api/videos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(videos)
+        });
+        updateWatchedCountUI();
+        renderGrid();
+        renderWatchedPopover();
+      } catch (err) { alert('Ошибка сохранения!'); }
+    }
+
+    function toggleWatchedPopover(e) {
+      if (e) e.stopPropagation();
+      const popover = document.getElementById('watchedPopover');
+      const arrow = document.getElementById('watchedArrow');
+      const isHidden = popover.classList.contains('hidden');
+
+      if (isHidden) {
+        popover.classList.remove('hidden');
+        arrow.classList.add('rotate-180');
+        renderWatchedPopover();
+      } else {
+        popover.classList.add('hidden');
+        arrow.classList.remove('rotate-180');
+      }
+    }
+
+    function handleOutsideClick(e) {
+      const popover = document.getElementById('watchedPopover');
+      const trigger = document.getElementById('watchedPopoverTrigger');
+      if (popover && !popover.contains(e.target) && !trigger.contains(e.target)) {
+        popover.classList.add('hidden');
+        document.getElementById('watchedArrow')?.classList.remove('rotate-180');
+      }
+      // закрываем открытые меню реакций при клике мимо
+      document.querySelectorAll('[id^="reactionMenu-"]:not(.hidden)').forEach(m => {
+        if (!m.contains(e.target)) m.classList.add('hidden');
+      });
+    }
+
+    function renderWatchedPopover() {
+      const grid = document.getElementById('watchedListGrid');
+      if (!grid) return;
+
+      const watched = watchedVideos();
+      if (watched.length === 0) {
+        grid.innerHTML = `<div class="col-span-3 text-center py-8 text-zinc-500 text-xs font-mono">Список просмотренного пуст 📭</div>`;
+        return;
+      }
+
+      grid.innerHTML = watched.map(v => `
+        <div class="group bg-zinc-950 border border-zinc-800/80 rounded-xl overflow-hidden flex flex-col justify-between hover:border-zinc-700 transition">
+          <div>
+            <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="relative block bg-black">
+              <span class="yt-thumb-wrap">
+                <img ${thumbSrc(v)} alt="${v.title}" class="opacity-80 group-hover:opacity-100 group-hover:scale-105 transition duration-300">
+              </span>
+              <span class="absolute bottom-1 right-1 bg-black/80 text-[9px] font-mono px-1 rounded text-zinc-300">${formatDuration(v.durationSec)}</span>
+            </a>
+            <div class="p-2">
+              <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="font-medium text-[11px] text-zinc-200 line-clamp-2 hover:text-red-400 transition leading-tight">
+                ${v.title}
+              </a>
+            </div>
+          </div>
+          <div class="px-2 pb-2 flex items-center justify-between gap-1 pt-1 border-t border-zinc-900">
+            <div class="flex items-center gap-1 min-w-0">
+              <button onclick="restoreFromWatched('${v.id}')" title="Вернуть в основной Vault" class="text-[10px] text-zinc-400 hover:text-emerald-400 transition font-mono flex items-center gap-0.5">
+                ↩ Вернуть
+              </button>
+              ${v.reaction ? `<span class="text-[11px] cursor-default" title="Ваша реакция">${v.reaction}</span>` : ''}
+            </div>
+            <div class="relative">
+              <div id="reactionMenu-${v.id}" class="hidden absolute bottom-full right-0 mb-1 bg-zinc-800 border border-zinc-700 rounded-full shadow-xl flex items-center gap-0.5 px-1.5 py-1 z-10">
+                ${['✅', '🔥', '💕', '✍️'].map(e => `<button onclick="setReaction('${v.id}', '${e}')" class="w-6 h-6 flex items-center justify-center text-sm rounded-full hover:bg-zinc-700 transition">${e}</button>`).join('')}
+              </div>
+              <button onclick="toggleReactionMenu('${v.id}', event)" title="Поставить реакцию" class="text-[10px] text-zinc-500 hover:text-amber-400 transition">
+                ☺
+              </button>
+            </div>
+            <button onclick="deleteFromWatched('${v.id}')" title="Удалить из просмотренных" class="text-[10px] text-zinc-500 hover:text-red-400 transition">
+              ✕
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    const REACTIONS = ['✅', '🔥', '💕', '✍️'];
+
+    function toggleReactionMenu(id, e) {
+      e.stopPropagation();
+      const menu = document.getElementById('reactionMenu-' + id);
+      if (!menu) return;
+      // закрываем все прочие открытые меню реакций
+      document.querySelectorAll('[id^="reactionMenu-"]').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+      menu.classList.toggle('hidden');
+    }
+
+    function setReaction(id, emoji) {
+      const target = videos.find(v => v.id === id);
+      if (target) {
+        // повторный клик по той же реакции снимает её
+        target.reaction = (target.reaction === emoji) ? null : emoji;
+        saveAndRender();
+      }
+    }
+
+    function markAsWatched(id) {
+      const target = videos.find(v => v.id === id);
+      if (target) {
+        target.watched = true;
+        target.watchedAt = Date.now();
+        saveAndRender();
+      }
+    }
+
+    function restoreFromWatched(id) {
+      const target = videos.find(v => v.id === id);
+      if (target && target.watched) {
+        target.watched = false;
+        saveAndRender();
+      }
+    }
+
+    function deleteFromWatched(id) {
+      // полное удаление видео из базы (как в старой версии — «✕» убирал навсегда)
+      const target = videos.find(v => v.id === id);
+      if (target && confirm('Удалить видео «' + (target.title || target.id) + '» навсегда?')) {
+        videos = videos.filter(v => v.id !== id);
+        saveAndRender();
+      }
+    }
+
+    // превью: локальный thumbs/ в приоритете, при ошибке — ytimg
+    function thumbSrc(v) {
+      return `src="/thumbs/${v.id}.jpg" onerror="this.onerror=null;this.src='${v.thumbnail}'"`;
+    }
+
+    async function syncAllThumbs() {
+      try {
+        const res = await fetch('/api/thumbs-all', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          await loadData();
+          renderWatchedPopover();
+          alert(`Готово! Скачано превью: ${data.downloaded} из ${data.total}${data.failed ? ' (не удалось: ' + data.failed + ')' : ''}`);
+        }
+      } catch (err) {
+        alert('Ошибка при скачивании превью!');
+      }
+    }
+
+    async function syncAllVideos() {
+      const btn = document.getElementById('syncBtn');
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '⏳ Обновление...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/sync-all', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          videos = data.videos;
+          updateWatchedCountUI();
+          renderGrid();
+          renderWatchedPopover();
+          alert('Все видео успешно обновлены!');
+        }
+      } catch (err) {
+        alert('Ошибка при синхронизации!');
+      } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+      }
+    }
+
+    function extractVideoId(url) {
+      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+      const match = url.match(regExp);
+      return (match && match[2].length === 11) ? match[2] : null;
+    }
+
+    function formatDuration(sec) {
+      if (!sec) return "0:00";
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function formatViews(views) {
+      if (views >= 1000000) return (views / 1000000).toFixed(1) + ' млн просмотров';
+      if (views >= 1000) return (views / 1000).toFixed(0) + ' тыс. просмотров';
+      return views + ' просмотров';
+    }
+
+    async function addVideo(e) {
+      if (e) e.preventDefault();
+      const input = document.getElementById('urlInput');
+      const url = input.value.trim();
+      const videoId = extractVideoId(url);
+
+      if (!videoId) return alert('Неверная ссылка!');
+      if (videos.some(v => v.id === videoId)) return alert('Уже есть в списке!');
+
+      let title = "YouTube Video";
+      let channel = "YouTube";
+      let views = 0; 
+      let durationSec = 0; 
+
+      try {
+        const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+        const data = await res.json();
+        if (data.title) title = data.title;
+        if (data.author_name) channel = data.author_name;
+      } catch (err) {}
+
+      try {
+        const infoRes = await fetch(`/api/ytinfo?id=${videoId}`);
+        const infoData = await infoRes.json();
+        if (infoData.views) views = infoData.views;
+        if (infoData.durationSec) durationSec = infoData.durationSec;
+      } catch (err) {}
+
+      // скачиваем превью на сервер — карточки работают без доступа к ytimg
+      let thumbUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      try {
+        const thumbRes = await fetch(`/api/thumb?id=${videoId}`);
+        const thumbData = await thumbRes.json();
+        if (thumbData.url) thumbUrl = thumbData.url;
+      } catch (err) {}
+
+      const newVideo = {
+        id: videoId,
+        title: title,
+        channel: channel,
+        thumbnail: thumbUrl,
+        durationSec: durationSec,
+        views: views,
+        dateAdded: new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }),
+        addedAt: Date.now()
+      };
+
+      videos.unshift(newVideo);
+      await saveAndRender();
+      input.value = '';
+    }
+
+    async function addFromClipboard() {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!text) return alert('Буфер обмена пуст!');
+        
+        const input = document.getElementById('urlInput');
+        input.value = text.trim();
+        await addVideo();
+      } catch (err) {
+        alert('Не удалось прочитать буфер обмена.');
+      }
+    }
+
+    function removeVideo(id) {
+      videos = videos.filter(v => v.id !== id);
+      saveAndRender();
+    }
+
+    function handleDurationChange() {
+      const slider = document.getElementById('durationSlider');
+      const label = document.getElementById('durationLabel');
+      currentDurationStep = parseInt(slider.value);
+
+      const labels = [
+        "Все",
+        "10 ±5 мин",
+        "20 ±5 мин",
+        "30 ±5 мин",
+        "40 ±5 мин",
+        "50 ±5 мин",
+        "60 ±5 мин",
+        "> 65 мин"
+      ];
+
+      label.innerText = labels[currentDurationStep];
+      renderGrid();
+    }
+
+    function filterByDuration(list) {
+      if (currentDurationStep === 0) return list;
+      if (currentDurationStep === 1) return list.filter(v => v.durationSec >= 300 && v.durationSec < 900);
+      if (currentDurationStep === 2) return list.filter(v => v.durationSec >= 900 && v.durationSec < 1500);
+      if (currentDurationStep === 3) return list.filter(v => v.durationSec >= 1500 && v.durationSec < 2100);
+      if (currentDurationStep === 4) return list.filter(v => v.durationSec >= 2100 && v.durationSec < 2700);
+      if (currentDurationStep === 5) return list.filter(v => v.durationSec >= 2700 && v.durationSec < 3300);
+      if (currentDurationStep === 6) return list.filter(v => v.durationSec >= 3300 && v.durationSec < 3900);
+      if (currentDurationStep === 7) return list.filter(v => v.durationSec >= 3900);
+      return list;
+    }
+
+    function renderGrid() {
+      const grid = document.getElementById('videoGrid');
+      const empty = document.getElementById('emptyState');
+      const stats = document.getElementById('statsCount');
+      const sortType = document.getElementById('sortSelect').value;
+
+      let filtered = filterByDuration(activeVideos());
+
+      if (sortType === 'random') filtered.sort(() => Math.random() - 0.5);
+      else if (sortType === 'duration_asc') filtered.sort((a, b) => a.durationSec - b.durationSec);
+      else if (sortType === 'duration_desc') filtered.sort((a, b) => b.durationSec - a.durationSec);
+      else if (sortType === 'views_desc') filtered.sort((a, b) => b.views - a.views);
+      else filtered.sort((a, b) => b.addedAt - a.addedAt);
+
+      stats.innerText = `${filtered.length} видео`;
+
+      if (filtered.length === 0) {
+        grid.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+      }
+
+      empty.classList.add('hidden');
+      grid.innerHTML = filtered.map(v => `
+        <div class="group bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden hover:border-zinc-700 transition flex flex-col justify-between">
+          <div>
+            <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="relative block aspect-video overflow-hidden bg-zinc-950">
+              <img ${thumbSrc(v)} class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+              <span class="absolute bottom-2 right-2 bg-black/80 text-white text-[11px] font-mono px-1.5 py-0.5 rounded">${formatDuration(v.durationSec)}</span>
+            </a>
+            <div class="p-4">
+              <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="font-medium text-sm text-zinc-100 line-clamp-2 hover:text-red-400 transition leading-snug">
+                ${v.title}
+              </a>
+              <p class="text-xs text-zinc-400 mt-2 font-mono">${v.channel}</p>
+              <div class="flex items-center gap-2 text-[11px] text-zinc-500 mt-1 font-mono">
+                <span>${formatViews(v.views)}</span>
+                <span>•</span>
+                <span>${v.dateAdded}</span>
+              </div>
+            </div>
+          </div>
+          <div class="px-4 pb-4 flex items-center justify-between border-t border-zinc-800/50 pt-3 mt-2">
+            <button onclick="removeVideo('${v.id}')" title="Удалить карточку" class="text-xs text-zinc-500 hover:text-red-400 transition flex items-center gap-1">
+              ✕ Удалить
+            </button>
+            <button onclick="markAsWatched('${v.id}')" class="text-xs text-zinc-500 hover:text-emerald-400 transition flex items-center gap-1">
+              ✓ Просмотрено
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    let currentRandomId = null;
+
+    function playRandom() {
+      let filtered = filterByDuration(activeVideos());
+      if (filtered.length === 0) return alert('Нет видео в этой категории!');
+      const v = filtered[Math.floor(Math.random() * filtered.length)];
+      currentRandomId = v.id;
+      
+      const content = document.getElementById('randomModalContent');
+      content.innerHTML = `
+        <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="relative block aspect-video overflow-hidden bg-zinc-950 group">
+          <img ${thumbSrc(v)} class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+          <div class="absolute inset-0 bg-black/20 group-hover:bg-transparent transition duration-300"></div>
+          <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100">
+            <div class="bg-red-600 text-white rounded-full p-4 shadow-xl shadow-red-900/50">
+              <svg class="w-10 h-10 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+          </div>
+          <span class="absolute bottom-3 right-3 bg-black/80 text-white text-xs font-mono px-2 py-1 rounded-md shadow">${formatDuration(v.durationSec)}</span>
+        </a>
+        <div class="p-5">
+          <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" class="font-medium text-lg text-zinc-100 line-clamp-2 hover:text-red-400 transition leading-snug">
+            ${v.title}
+          </a>
+          <p class="text-sm text-zinc-400 mt-2 font-mono">${v.channel}</p>
+          <div class="flex items-center gap-3 text-sm text-zinc-500 mt-2 font-mono">
+            <span>👁️ ${formatViews(v.views)}</span>
+            <span>📅 ${v.dateAdded}</span>
+          </div>
+        </div>
+      `;
+      document.getElementById('randomModal').classList.remove('hidden');
+    }
+
+    function markRandomWatched() {
+      if (currentRandomId) {
+        const target = videos.find(v => v.id === currentRandomId);
+        if (target && !target.watched) {
+          target.watched = true;
+          target.watchedAt = Date.now();
+          saveAndRender();
+        }
+      }
+      currentRandomId = null;
+      playRandom();
+    }
+
+    function closeRandomModal() {
+      document.getElementById('randomModal').classList.add('hidden');
+    }
+
+    document.getElementById('randomModal').addEventListener('click', function(e) {
+      if (e.target === this) closeRandomModal();
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeRandomModal();
+        document.getElementById('watchedPopover')?.classList.add('hidden');
+        document.getElementById('watchedArrow')?.classList.remove('rotate-180');
+        document.querySelectorAll('[id^="reactionMenu-"]').forEach(m => m.classList.add('hidden'));
+      }
+    });
+
+    function changeGridCols() {
+      const grid = document.getElementById('videoGrid');
+      const slider = document.getElementById('gridSlider');
+      if (!grid || !slider) return;
+
+      if (slider.value === "6") {
+        grid.className = "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6";
+      } else {
+        grid.className = "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6";
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      loadData();
+      changeGridCols();
+    });
+  </script>
+</body>
+</html>
